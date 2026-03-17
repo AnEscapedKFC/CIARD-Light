@@ -31,7 +31,9 @@ with open('./model/' + prefix+ '/'+ draw_file,'w') as f:
     text = "epoch student_robust_acc student_natural_acc adv_teacher_robust_acc adv_teacher_natural_acc nat_teacher_robust_acc nat_teacher_natural_acc\n"
     f.write(text)
 epochs = 300
-batch_size = 128
+# batch_size = 128
+# 性能不足，减小数据集规模
+batch_size = 64
 epsilon = 8/255.0
 class AverageMeter(object):
     """Computes and stores the average and current value"""

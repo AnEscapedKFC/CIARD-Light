@@ -1,0 +1,21 @@
+name: ciard
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip
+  - git
+  - numpy=1.22.4
+  - pytorch=2.3.1
+  - torchvision=0.18.1
+  - pytorch-cuda=11.8
+  - pip:
+      - loguru==0.7.2
+      - torchattacks==3.5.1
+
+# AutoAttack is required by attack_eval.py but is not available on PyPI.
+# After creating the environment, install it manually with one of:
+# 1. pip install git+https://github.com/fra31/auto-attack.git
+# 2. copy the upstream "autoattack" folder into this repo root

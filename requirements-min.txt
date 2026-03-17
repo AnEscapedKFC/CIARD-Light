@@ -1,0 +1,18 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+# CIARD minimum environment
+# Recommended Python: 3.8
+
+# Core training dependencies
+numpy==1.22.4
+loguru==0.7.2
+torch==2.3.1+cu118
+torchvision==0.18.1+cu118
+
+# Evaluation extras that are available from pip
+torchattacks==3.5.1
+
+# AutoAttack is required by attack_eval.py but is not published on PyPI
+# and the upstream repository is not packaged for pip installation.
+# Install it manually by copying the upstream "autoattack" directory into
+# this project root, so that "./autoattack" exists next to attack_eval.py.

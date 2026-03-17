@@ -1,0 +1,35 @@
+.vscode/
+.idea/
+%temp%/
+
+# Python caches and virtual envs
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Training artifacts, datasets, and checkpoints
+data/
+model/
+models/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+
+# Logs and runtime outputs
+*.log
+*.out
