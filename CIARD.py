@@ -14,6 +14,7 @@ import torchvision
 from torchvision import transforms
 from loguru import logger
 import math
+import numpy as np
 # we fix the random seed to 0, this method can keep the results consistent in the same conputer.
 torch.manual_seed(0)
 torch.cuda.manual_seed_all(0)
@@ -30,11 +31,27 @@ if not os.path.exists(model_dir):
 with open('./model/' + prefix+ '/'+ draw_file,'w') as f:
     text = "epoch student_robust_acc student_natural_acc adv_teacher_robust_acc adv_teacher_natural_acc nat_teacher_robust_acc nat_teacher_natural_acc\n"
     f.write(text)
-epochs = 300
-# batch_size = 128
-# 性能不足，减小数据集规模
+epochs = 100
 batch_size = 64
 epsilon = 8/255.0
+train_samples_per_class = 2000
+eval_interval = 20
+baseline_epochs = 300
+
+
+def scale_epoch_marker(marker, total_epochs, reference_epochs=baseline_epochs):
+    return max(1, min(total_epochs, int(round(marker * total_epochs / reference_epochs))))
+
+
+student_decay_start = scale_epoch_marker(150, epochs)
+teacher_start_epoch = scale_epoch_marker(50, epochs)
+teacher_update_start = teacher_start_epoch
+adaptive_weight_decay_epochs = sorted(
+    set(scale_epoch_marker(marker, epochs) for marker in (215, 260, 285))
+)
+latest_checkpoint_start = scale_epoch_marker(250, epochs)
+
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):
@@ -61,6 +78,18 @@ transform_test = transforms.Compose([
 ])
 
 trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+train_targets = np.array(trainset.targets)
+subset_rng = np.random.default_rng(0)
+train_subset_indices = []
+for class_idx in range(10):
+    class_indices = np.where(train_targets == class_idx)[0]
+    if train_samples_per_class > len(class_indices):
+        raise ValueError(
+            f"Requested {train_samples_per_class} samples for class {class_idx}, but only found {len(class_indices)}."
+        )
+    sampled_indices = subset_rng.choice(class_indices, size=train_samples_per_class, replace=False)
+    train_subset_indices.extend(sampled_indices.tolist())
+trainset = torch.utils.data.Subset(trainset, train_subset_indices)
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=0)
 
 testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
@@ -79,7 +108,7 @@ if(resume_student_path == None):
 else:
     optimizer = optim.SGD(student.parameters(), lr=0.1, momentum=0.9, weight_decay=2e-4)
 
-begin_epoch = 1 if resume_student_path == None else 200
+begin_epoch = 1 if resume_student_path == None else scale_epoch_marker(200, epochs)
 
 weight = {
     "adv_loss": 1/2.0,
@@ -186,8 +215,20 @@ push label T=5
 Lr stage decay
 push_loss(nat_adv_logits,student_adv_logits,train_batch_labels) 
 teacher lr weight decay from 0.0001 to 0 with smooth decay
-epoch = 300 coslr
-''')
+epoch = {} coslr
+train samples per class = {}
+student decay start = {}
+teacher start epoch = {}
+'''.format(
+    epochs,
+    train_samples_per_class,
+    student_decay_start,
+    teacher_start_epoch,
+))
+
+logger.info(
+    'using {} training samples and {} test samples'.format(len(trainset), len(testset))
+)
 
 for epoch in range(begin_epoch,epochs+1):
     logger.info('the {}th epoch '.format(epoch)) 
@@ -261,28 +302,30 @@ for epoch in range(begin_epoch,epochs+1):
             total_loss -= loss4_weight*kl_Loss4
         '''
 
-        if epoch < 150:
+        if epoch < student_decay_start:
             lr = 0.1
         else:
-            cosine_term = 0.5 + 0.5 * np.cos(np.pi * (epoch - 150) / (300 - 150))
-            exponential_decay = np.exp(-0.01 * (epoch - 150) ** 2 / (300 - 150) ** 2)
+            student_decay_span = max(1, epochs - student_decay_start)
+            cosine_term = 0.5 + 0.5 * np.cos(np.pi * (epoch - student_decay_start) / student_decay_span)
+            exponential_decay = np.exp(-0.01 * (epoch - student_decay_start) ** 2 / student_decay_span ** 2)
             lr = 0.1 * cosine_term * exponential_decay
 
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         
-        if epoch < 50:
+        if epoch < teacher_start_epoch:
             teacher_lr = 0
         else:
             base_lr = 0.0001
             min_lr = 0
-            cosine_term = 0.5 + 0.5 * np.cos(np.pi * (epoch - 50) / (300 - 50))
-            exponential_decay = np.exp(-0.01 * (epoch - 50) ** 2 / (300 - 50) ** 2)
+            teacher_decay_span = max(1, epochs - teacher_start_epoch)
+            cosine_term = 0.5 + 0.5 * np.cos(np.pi * (epoch - teacher_start_epoch) / teacher_decay_span)
+            exponential_decay = np.exp(-0.01 * (epoch - teacher_start_epoch) ** 2 / teacher_decay_span ** 2)
             teacher_lr = min_lr + (base_lr - min_lr) * cosine_term*exponential_decay
             
         for param_group in ADV_teacher_optimizer.param_groups:
             param_group['lr'] = teacher_lr
-        if epoch in [215,260,285]:
+        if epoch in adaptive_weight_decay_epochs:
             weight_learn_rate *= 0.1
             temp_learn_rate *= 0.1
                     
@@ -290,7 +333,7 @@ for epoch in range(begin_epoch,epochs+1):
         total_loss.backward()
         optimizer.step()
         ADV_teacher_loss = ADV_teacher_loss_CE(teacher_adv_logits,train_batch_labels)
-        if(epoch>50):
+        if(epoch > teacher_update_start):
             ADV_teacher_loss.backward()
             ADV_teacher_optimizer.step()
         if step%100 == 0:
@@ -300,7 +343,7 @@ for epoch in range(begin_epoch,epochs+1):
             logger.info(text) 
         
 
-    if epoch == 1 or epoch%10==  0 or epoch >= 250: 
+    if epoch == 1 or epoch % eval_interval == 0 or epoch == epochs: 
         loss_nat_test = AverageMeter()
         loss_adv_test = AverageMeter()
 
@@ -390,7 +433,7 @@ for epoch in range(begin_epoch,epochs+1):
             state = { 'model': teacher.state_dict(),
                 'optimizer': ADV_teacher_optimizer.state_dict(), 'epoch': epoch}
             torch.save(state,'./model/'+ prefix + "/teacher_" + str(epoch)+ '.pth')
-        if epoch > 250:
+        if epoch > latest_checkpoint_start:
             state = { 'model': student.state_dict(),
                 'optimizer': optimizer.state_dict(), 'epoch': epoch}
             torch.save(state,'./model/' + prefix + "/student_latest.pth")
