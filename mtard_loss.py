@@ -36,15 +36,16 @@ def robust_inner_loss_push(model,
                 perturb_steps=10,
                 beta=6.0):
 
-    criterion_ce_loss = torch.nn.CrossEntropyLoss().cuda()
+    device = x_natural.device
+    criterion_ce_loss = torch.nn.CrossEntropyLoss().to(device)
     model.eval()
     batch_size = len(x_natural)
-    x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
+    x_adv = x_natural.detach() + 0.001 * torch.randn_like(x_natural).detach()
 
     for _ in range(perturb_steps):
         x_adv.requires_grad_()
         with torch.enable_grad():
-            loss_ce = criterion_ce_loss(model(x_adv), y.cuda())
+            loss_ce = criterion_ce_loss(model(x_adv), y.to(device))
         grad = torch.autograd.grad(loss_ce, [x_adv])[0]
         x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
         x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
@@ -74,14 +75,15 @@ def CIARD_inner_loss(model,
                 perturb_steps=10,
                 beta=6.0):
 
-    criterion_ce_loss = torch.nn.CrossEntropyLoss().cuda()
+    device = x_natural.device
+    criterion_ce_loss = torch.nn.CrossEntropyLoss().to(device)
     model.eval()
-    x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
+    x_adv = x_natural.detach() + 0.001 * torch.randn_like(x_natural).detach()
 
     for _ in range(perturb_steps):
         x_adv.requires_grad_()
         with torch.enable_grad():
-            loss_ce = criterion_ce_loss(model(x_adv), y.cuda())
+            loss_ce = criterion_ce_loss(model(x_adv), y.to(device))
         grad = torch.autograd.grad(loss_ce, [x_adv])[0]
         x_adv = x_adv.detach() + step_size * torch.sign(grad.detach())
         x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)

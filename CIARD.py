@@ -17,10 +17,32 @@ import math
 import numpy as np
 # we fix the random seed to 0, this method can keep the results consistent in the same conputer.
 torch.manual_seed(0)
-torch.cuda.manual_seed_all(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
 torch.backends.cudnn.deterministic = True
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if device.type != "cuda":
+    raise RuntimeError(
+        "CIARD requires an NVIDIA CUDA GPU. For RTX 5070 Ti, follow setup_rtx5070ti.md."
+    )
+
+
+def load_checkpoint(path):
+    load_kwargs = {"map_location": torch.device("cpu")}
+    try:
+        return torch.load(path, weights_only=True, **load_kwargs)
+    except TypeError:
+        return torch.load(path, **load_kwargs)
+
+
+def load_state_dict_from_checkpoint(path, key="model"):
+    checkpoint = load_checkpoint(path)
+    if isinstance(checkpoint, dict) and key in checkpoint and hasattr(checkpoint[key], "items"):
+        checkpoint = checkpoint[key]
+    if not hasattr(checkpoint, "items"):
+        raise TypeError(f"Unsupported checkpoint format in {path}")
+    return {k.replace('module.', ''): v for k, v in checkpoint.items()}
 
 prefix = 'Cifar10_MobileNetV2'
 draw_file = prefix
@@ -96,19 +118,17 @@ testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True
 testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=0)
 
 student = mobilenet_v2()#resnet18() 
-resume_student_path = None 
-if resume_student_path != None:
-    state_dict = torch.load(resume_student_path,map_location=torch.device('cpu'))["model"]
-    new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-    student.load_state_dict(new_state_dict)
-student = student.cuda()
+resume_student_path = None
+if resume_student_path is not None:
+    student.load_state_dict(load_state_dict_from_checkpoint(resume_student_path))
+student = student.to(device)
 student.train()
-if(resume_student_path == None):
+if resume_student_path is None:
     optimizer = optim.SGD(student.parameters(), lr=0.1, momentum=0.9, weight_decay=2e-4)
 else:
     optimizer = optim.SGD(student.parameters(), lr=0.1, momentum=0.9, weight_decay=2e-4)
 
-begin_epoch = 1 if resume_student_path == None else scale_epoch_marker(200, epochs)
+begin_epoch = 1 if resume_student_path is None else scale_epoch_marker(200, epochs)
 
 weight = {
     "adv_loss": 1/2.0,
@@ -168,17 +188,15 @@ teacher1_path =  'models/model_cifar_wrn.pt'
 #state_dict = torch.load(teacher1_path)
 #teacher.load_state_dict(state_dict)
 
-state_dict = torch.load(teacher1_path,map_location=torch.device('cpu'))#["model"]
-new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-teacher.load_state_dict(new_state_dict)
+teacher.load_state_dict(load_state_dict_from_checkpoint(teacher1_path, key="model"))
 
 #teacher = torch.nn.DataParallel(teacher)
-teacher = teacher.cuda()
+teacher = teacher.to(device)
 # teacher = teacher.half()
 #teacher.eval()
 teacher_lr = 0.0001
 ADV_teacher_optimizer = optim.SGD(teacher.parameters(), lr=teacher_lr, momentum=0.1, weight_decay=2e-4)
-ADV_teacher_loss_CE = torch.nn.CrossEntropyLoss().cuda()
+ADV_teacher_loss_CE = torch.nn.CrossEntropyLoss().to(device)
 teacher.train()
 
 
@@ -187,19 +205,17 @@ teacher2_path = 'models/nat_teacher_checkpoint/cifar10_resnnet56.pth'
 #state_dict_1 = torch.load(teacher2_path)
 #teacher_nat.load_state_dict(state_dict_1)
 
-state_dict = torch.load(teacher2_path,map_location=torch.device('cpu'))
-new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-teacher_nat.load_state_dict(new_state_dict)
+teacher_nat.load_state_dict(load_state_dict_from_checkpoint(teacher2_path, key="model"))
 
 #teacher = torch.nn.DataParallel(teacher)
-teacher_nat = teacher_nat.cuda()
+teacher_nat = teacher_nat.to(device)
 teacher_nat.eval()
 
 
 weight_learn_rate = 0.025
 temp_learn_rate = 0.001
 
-ce_loss = torch.nn.CrossEntropyLoss().cuda()
+ce_loss = torch.nn.CrossEntropyLoss().to(device)
 ce_loss_test = torch.nn.CrossEntropyLoss(reduction='none')
 best_accuracy = 0
 
@@ -235,8 +251,8 @@ for epoch in range(begin_epoch,epochs+1):
     for step,(train_batch_data,train_batch_labels) in enumerate(trainloader): 
         student.train()
         teacher.train()
-        train_batch_data = train_batch_data.float().cuda()
-        train_batch_labels = train_batch_labels.cuda()
+        train_batch_data = train_batch_data.float().to(device)
+        train_batch_labels = train_batch_labels.to(device)
         optimizer.zero_grad()
         ADV_teacher_optimizer.zero_grad()
          
@@ -262,9 +278,9 @@ for epoch in range(begin_epoch,epochs+1):
         temp_nat = temp_nat - temp_learn_rate * torch.sign((nat_teacher_entropy.detach() / adv_teacher_entropy.detach() - 1)).item()
         temp_adv = max(min(temp_max, temp_adv), temp_min)
         temp_nat = max(min(temp_max, temp_nat), temp_min)
-        if init_loss_nat == None:
+        if init_loss_nat is None:
             init_loss_nat = kl_Loss2.item()
-        if init_loss_adv == None:
+        if init_loss_adv is None:
             init_loss_adv = kl_Loss1.item()
         G_avg = (kl_Loss1.item() + kl_Loss2.item()) / len(weight)
         lhat_adv = kl_Loss1.item() / init_loss_adv
@@ -284,10 +300,10 @@ for epoch in range(begin_epoch,epochs+1):
         weight["nat_loss"] *= coef
         total_loss = 1 * kl_Loss1 + 1 *kl_Loss2 #weight["adv_loss"]*kl_Loss1 + weight["nat_loss"]*kl_Loss2 This is for ablation with Mtard,which is requeseted in Rebuttal stage
 
-
+        loss3_weight = 0.0
         kl_Loss3 = push_loss(nat_adv_logits,student_adv_logits,train_batch_labels) 
         if(torch.isnan(kl_Loss3).any() or kl_Loss3.numel() == 0):
-            kl_Loss3 = torch.tensor(0.0)
+            kl_Loss3 = torch.tensor(0.0, device=device)
         else:
             kl_Loss3 = torch.mean(kl_Loss3)
             loss3_weight = scale_to_magnitude(float(kl_Loss1.item()), float(kl_Loss2.item()), float(kl_Loss3.item())) #This is fit the loss3 into the same scale with others,this is not lambda,lambda here is 1
@@ -363,8 +379,8 @@ for epoch in range(begin_epoch,epochs+1):
 
 
         for step,(test_batch_data,test_batch_labels) in enumerate(testloader):
-            test_batch_data = test_batch_data.float().cuda()
-            test_batch_labels = test_batch_labels.cuda()
+            test_batch_data = test_batch_data.float().to(device)
+            test_batch_labels = test_batch_labels.to(device)
             test_ifgsm_data = attack_pgd(student,test_batch_data,test_batch_labels,attack_iters=20,step_size=0.003,epsilon=8.0/255.0)
             with torch.no_grad():
                 logits = student(test_ifgsm_data)
@@ -375,12 +391,14 @@ for epoch in range(begin_epoch,epochs+1):
             predictions = np.argmax(logits.cpu().detach().numpy(),axis=1)
             predictions = predictions - test_batch_labels.cpu().detach().numpy()
             test_accs = test_accs + predictions.tolist()
-            teacher_logits = teacher(test_ifgsm_data)
+            with torch.no_grad():
+                teacher_logits = teacher(test_ifgsm_data)
             teacher_predictions = np.argmax(teacher_logits.cpu().detach().numpy(),axis=1)
             teacher_predictions = teacher_predictions - test_batch_labels.cpu().detach().numpy()
             teacher_test_accs = teacher_test_accs + teacher_predictions.tolist()
 
-            nat_teacher_logits = teacher_nat(test_ifgsm_data)
+            with torch.no_grad():
+                nat_teacher_logits = teacher_nat(test_ifgsm_data)
             nat_teacher_predictions = np.argmax(nat_teacher_logits.cpu().detach().numpy(),axis=1)
             nat_teacher_predictions = nat_teacher_predictions - test_batch_labels.cpu().detach().numpy()
             nat_teacher_test_accs = nat_teacher_test_accs + nat_teacher_predictions.tolist()
@@ -398,8 +416,8 @@ for epoch in range(begin_epoch,epochs+1):
         logger.info(text)
 
         for step,(test_batch_data,test_batch_labels) in enumerate(testloader): 
-            test_batch_data = test_batch_data.float().cuda()
-            test_batch_labels = test_batch_labels.cuda()
+            test_batch_data = test_batch_data.float().to(device)
+            test_batch_labels = test_batch_labels.to(device)
             with torch.no_grad():
                 logits = student(test_batch_data)
                 loss = ce_loss(logits, test_batch_labels)
@@ -409,12 +427,14 @@ for epoch in range(begin_epoch,epochs+1):
             predictions = predictions - test_batch_labels.cpu().detach().numpy()
             test_accs_naturals = test_accs_naturals + predictions.tolist()
 
-            teacher_logits = teacher(test_batch_data)
+            with torch.no_grad():
+                teacher_logits = teacher(test_batch_data)
             teacher_predictions = np.argmax(teacher_logits.cpu().detach().numpy(),axis=1)
             teacher_predictions = teacher_predictions - test_batch_labels.cpu().detach().numpy()
             teacher_test_accs_naturals = teacher_test_accs_naturals + teacher_predictions.tolist()
 
-            nat_teacher_logits = teacher_nat(test_batch_data)
+            with torch.no_grad():
+                nat_teacher_logits = teacher_nat(test_batch_data)
             nat_teacher_predictions = np.argmax(nat_teacher_logits.cpu().detach().numpy(),axis=1)
             nat_teacher_predictions = nat_teacher_predictions - test_batch_labels.cpu().detach().numpy()
             nat_teacher_test_accs_naturals = nat_teacher_test_accs_naturals + nat_teacher_predictions.tolist()

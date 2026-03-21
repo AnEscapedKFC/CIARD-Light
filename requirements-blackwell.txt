@@ -1,0 +1,6 @@
+# Install PyTorch separately from the official cu128 index first:
+#   python -m pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+
+numpy==1.26.4
+loguru==0.7.2
+torchattacks==3.5.1

@@ -1,3 +1,6 @@
+# Legacy environment for pre-Blackwell GPUs.
+# RTX 5070 Ti / Blackwell users should use environment-blackwell.yml
+# and follow setup_rtx5070ti.md instead.
 name: ciard
 channels:
   - pytorch

@@ -1,17 +1,39 @@
-import os
 import torch
-from cifar10_models.resnet import resnet18
 from cifar10_models import *
 from cifar10_nat_teacher_models import *
 import torchvision
 from torchvision import transforms
 from loguru import logger
 import numpy as np
-import torch.nn as nn
 import torchattacks
 import torch.nn.functional as F
 
 from autoattack import AutoAttack
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if device.type != "cuda":
+    raise RuntimeError(
+        "attack_eval.py requires an NVIDIA CUDA GPU. For RTX 5070 Ti, follow setup_rtx5070ti.md."
+    )
+
+
+def load_checkpoint(path):
+    load_kwargs = {"map_location": torch.device("cpu")}
+    try:
+        return torch.load(path, weights_only=True, **load_kwargs)
+    except TypeError:
+        return torch.load(path, **load_kwargs)
+
+
+def load_state_dict_from_checkpoint(path, key="model"):
+    checkpoint = load_checkpoint(path)
+    if isinstance(checkpoint, dict) and key in checkpoint and hasattr(checkpoint[key], "items"):
+        checkpoint = checkpoint[key]
+    if not hasattr(checkpoint, "items"):
+        raise TypeError(f"Unsupported checkpoint format in {path}")
+    return {k.replace('module.', ''): v for k, v in checkpoint.items()}
+
+
 def eval_autoattack(model, testloader, epsilon=8/255.0, norm='Linf', attacks_to_run=None):
     model.eval()
     adversary = AutoAttack(model, norm=norm, eps=epsilon, version='standard', verbose=True)
@@ -23,13 +45,15 @@ def eval_autoattack(model, testloader, epsilon=8/255.0, norm='Linf', attacks_to_
     for x, y in testloader:
         xs.append(x)
         ys.append(y)
-    x_test = torch.cat(xs, dim=0).cuda()
-    y_test = torch.cat(ys, dim=0).cuda()
+    x_test = torch.cat(xs, dim=0).to(device)
+    y_test = torch.cat(ys, dim=0).to(device)
 
-    with torch.no_grad():
-        adv_complete = adversary.run_standard_evaluation(x_test, y_test, bs=128)
+    return adversary.run_standard_evaluation(x_test, y_test, bs=min(128, x_test.size(0)))
 
 path = ""
+if not path:
+    raise ValueError("Set `path` in attack_eval.py to the student checkpoint before running evaluation.")
+
 student = mobilenet_v2()# cifar10_resnet56()# wideresnet()##resnet18()#
 
 teacher1_path =  'models/model_cifar_wrn.pt' #for blackbox attack
@@ -41,10 +65,8 @@ transform_test = transforms.Compose([
 testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
 testloader = torch.utils.data.DataLoader(testset, batch_size=128, shuffle=False, num_workers=0)
 
-state_dict = torch.load(path,map_location=torch.device('cpu'))["model"]
-new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-student.load_state_dict(new_state_dict)
-student = student.cuda()
+student.load_state_dict(load_state_dict_from_checkpoint(path))
+student = student.to(device)
 student.eval()
 
 
@@ -58,8 +80,7 @@ def attack_pgd(model,train_batch_data,train_batch_labels,attack_iters=10,step_si
         train_ifgsm_data.requires_grad_()
         logits = model(train_ifgsm_data)
         loss = ce_loss(logits,train_batch_labels.to(device))
-        loss.backward()
-        train_grad = train_ifgsm_data.grad.detach()
+        train_grad = torch.autograd.grad(loss, train_ifgsm_data)[0].detach()
         train_ifgsm_data = train_ifgsm_data + step_size*torch.sign(train_grad)
         train_ifgsm_data = torch.clamp(train_ifgsm_data.detach(),0,1)
         train_ifgsm_pert = train_ifgsm_data - train_batch_data
@@ -75,27 +96,25 @@ def attack_fgsm(model, train_batch_data, train_batch_labels, epsilon=8.0/255.0):
     train_batch_data.requires_grad_()
     logits = model(train_batch_data)
     loss = ce_loss(logits, train_batch_labels.to(device))
-    loss.backward()
-    
-    data_grad = train_batch_data.grad.detach()
+    data_grad = torch.autograd.grad(loss, train_batch_data)[0].detach()
     sign_data_grad = data_grad.sign()
     
     perturbed_data = train_batch_data + epsilon * sign_data_grad
     perturbed_data = torch.clamp(perturbed_data, 0, 1) 
     return perturbed_data
 
-def attack_cw_inf(model, input, target, confidence=50, num_classes=10, epsilon=8/255, lr=2/255, steps=30):
-    perturbation = torch.zeros_like(input).cuda().requires_grad_()
+def attack_cw_inf(model, inputs, target, confidence=50, num_classes=10, epsilon=8/255, lr=2/255, steps=30):
+    perturbation = torch.zeros_like(inputs).to(inputs.device).requires_grad_()
     for _ in range(steps):
-        output = model(input + perturbation)
-        target_onehot = F.one_hot(target, num_classes=num_classes).float().cuda()
+        output = model(inputs + perturbation)
+        target_onehot = F.one_hot(target, num_classes=num_classes).float().to(inputs.device)
         real = torch.sum(target_onehot * output, dim=1)
         other = torch.max((1 - target_onehot) * output - target_onehot * 10000, dim=1)[0]
         loss = -torch.clamp(real - other + confidence, min=0.).mean()  
         grad = torch.autograd.grad(loss, perturbation)[0]
         perturbation = (perturbation + lr * torch.sign(grad)).clamp(-epsilon, epsilon)
         perturbation = perturbation.detach().requires_grad_()
-    adversarial_input = input + perturbation
+    adversarial_input = inputs + perturbation
     adversarial_input = torch.clamp(adversarial_input, 0, 1) 
     return adversarial_input 
 logger.info("=============== AutoAttack Evaluation ===============")
@@ -106,8 +125,8 @@ logger.info("============white box attack===================")
 torch.cuda.empty_cache()
 test_accs_naturals = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader): #,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     with torch.no_grad():
         logits = student(test_batch_data)
     predictions = np.argmax(logits.cpu().detach().numpy(),axis=1)
@@ -121,8 +140,8 @@ logger.info(text)
 torch.cuda.empty_cache()
 test_accs = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     test_ifgsm_data = attack_pgd(student,test_batch_data,test_batch_labels,attack_iters=20,step_size=0.003,epsilon=8.0/255.0)
     with torch.no_grad():
         logits = student(test_ifgsm_data)
@@ -138,8 +157,8 @@ logger.info(text)
 torch.cuda.empty_cache()
 test_accs = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     test_ifgsm_data = attack_pgd(student,test_batch_data,test_batch_labels,attack_iters=20,step_size=2.0/255.0,epsilon=8.0/255.0)
     with torch.no_grad():
         logits = student(test_ifgsm_data)
@@ -155,8 +174,8 @@ logger.info(text)
 torch.cuda.empty_cache()
 test_accs = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     test_ifgsm_data = attack_fgsm(student,test_batch_data,test_batch_labels)
     with torch.no_grad():
         logits = student(test_ifgsm_data)
@@ -172,8 +191,8 @@ logger.info(text)
 torch.cuda.empty_cache()
 test_accs = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     test_ifgsm_data = attack_cw_inf(student,test_batch_data,test_batch_labels)
     with torch.no_grad():
         logits = student(test_ifgsm_data)
@@ -189,18 +208,16 @@ logger.info(text)
 
 
 
-state_dict = torch.load(teacher1_path,map_location=torch.device('cpu'))
-new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-teacher.load_state_dict(new_state_dict)
-teacher = teacher.cuda()
+teacher.load_state_dict(load_state_dict_from_checkpoint(teacher1_path, key="model"))
+teacher = teacher.to(device)
 teacher.eval()
 logger.info("===============blackbox attack================")
 
 torch.cuda.empty_cache()
 test_accs = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     test_ifgsm_data = attack_pgd(teacher,test_batch_data,test_batch_labels,attack_iters=20,step_size=0.003,epsilon=8.0/255.0)
     with torch.no_grad():
         logits = student(test_ifgsm_data)
@@ -215,10 +232,10 @@ logger.info(text)
 
 torch.cuda.empty_cache()
 test_accs = []
-attack_sa = torchattacks.attacks.square.Square(student, norm='Linf', eps=8/255, n_queries=100)
+attack_sa = torchattacks.Square(student, norm='Linf', eps=8/255, n_queries=100)
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     
     
     test_ifgsm_data = attack_sa(test_batch_data,test_batch_labels)
@@ -236,8 +253,8 @@ logger.info(text)
 torch.cuda.empty_cache()
 test_accs = []
 for step,(test_batch_data,test_batch_labels) in enumerate(testloader):#,index
-    test_batch_data = test_batch_data.float().cuda()
-    test_batch_labels = test_batch_labels.cuda()
+    test_batch_data = test_batch_data.float().to(device)
+    test_batch_labels = test_batch_labels.to(device)
     test_ifgsm_data = attack_cw_inf(teacher,test_batch_data,test_batch_labels)
     with torch.no_grad():
         logits = student(test_ifgsm_data)

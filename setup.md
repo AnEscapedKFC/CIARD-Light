@@ -1,5 +1,9 @@
 ﻿# CIARD 环境与运行说明
 
+> 如果你使用的是 **RTX 5070 Ti / Blackwell**，不要继续使用本文档里的
+> `environment.yml`。请改用根目录下的 `setup_rtx5070ti.md`，因为当前
+> 这份说明针对的是旧版 `PyTorch 2.3.1 + CUDA 11.8` 环境。
+
 ## 1. 前置条件
 
 - 操作系统：Windows + PowerShell

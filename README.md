@@ -5,6 +5,8 @@
 ## Instructions for Reproducing Results
 
 1. **Environment Setup**  
+   - If you are using an **RTX 5070 Ti / Blackwell GPU**, follow
+     `setup_rtx5070ti.md` instead of the legacy environment files.
    Ensure you are using **Python 3.8**. Install all required packages using:
 
    ```bash

@@ -1,3 +1,9 @@
+#
+# Legacy minimum environment for pre-Blackwell GPUs only.
+# RTX 5070 Ti / Blackwell users should install the cu128 wheels from
+# setup_rtx5070ti.md instead of this file.
+#
+
 --extra-index-url https://download.pytorch.org/whl/cu118
 
 # CIARD minimum environment
