@@ -33,3 +33,6 @@ models/
 # Logs and runtime outputs
 *.log
 *.out
+outputs.txt
+tmp_ciard_pdf.txt
+CIARD.pdf
