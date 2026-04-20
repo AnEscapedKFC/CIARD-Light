@@ -1,3 +1,5 @@
+import pickle
+
 import torch
 from cifar10_models import *
 from cifar10_nat_teacher_models import *
@@ -21,6 +23,15 @@ def load_checkpoint(path):
     load_kwargs = {"map_location": torch.device("cpu")}
     try:
         return torch.load(path, weights_only=True, **load_kwargs)
+    except pickle.UnpicklingError as exc:
+        logger.warning(
+            "weights_only=True failed for checkpoint {}. Falling back to "
+            "weights_only=False because this file is assumed to be trusted. "
+            "Original error: {}",
+            path,
+            exc,
+        )
+        return torch.load(path, weights_only=False, **load_kwargs)
     except TypeError:
         return torch.load(path, **load_kwargs)
 
@@ -50,7 +61,7 @@ def eval_autoattack(model, testloader, epsilon=8/255.0, norm='Linf', attacks_to_
 
     return adversary.run_standard_evaluation(x_test, y_test, bs=min(128, x_test.size(0)))
 
-path = ""
+path = "model/Cifar10_MobileNetV2/student_best.pth"  # path of student model
 if not path:
     raise ValueError("Set `path` in attack_eval.py to the student checkpoint before running evaluation.")
 
